@@ -1,0 +1,869 @@
+% !TEX program = lualatex
+\documentclass[9pt,a4paper,landscape]{article}
+\usepackage[margin=9mm]{geometry}
+\usepackage{fontspec}
+\usepackage[polish]{babel}
+\usepackage{multicol}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{framed}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{etoolbox}
+
+\IfFontExistsTF{DejaVu Sans}{\setmainfont{DejaVu Sans}}{}
+\IfFontExistsTF{DejaVu Sans Mono}{\setmonofont{DejaVu Sans Mono}}{}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Sieci komputerowe - ściąga praktyczna}
+\rhead{routing, VLAN, iptables, NAT}
+\cfoot{\thepage}
+\setlength{\columnsep}{6mm}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{1.5pt}
+\setlist{nosep,leftmargin=*}
+\titlespacing*{\section}{0pt}{4pt}{2pt}
+\titlespacing*{\subsection}{0pt}{3pt}{1pt}
+\titlespacing*{\subsubsection}{0pt}{2pt}{1pt}
+\titleformat{\section}{\large\bfseries\color{blue!55!black}}{}{0pt}{}
+\titleformat{\subsection}{\bfseries\color{black}}{}{0pt}{}
+\titleformat{\subsubsection}{\itshape\bfseries}{}{0pt}{}
+\newcommand{\kw}[1]{\textbf{#1}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\warn}[1]{\textbf{Uwaga:} #1}
+\newcommand{\ok}[1]{\textbf{Test:} #1}
+\lstdefinestyle{bashstyle}{
+  basicstyle=\ttfamily\scriptsize,
+  columns=fullflexible,
+  breaklines=true,
+  breakatwhitespace=false,
+  keepspaces=true,
+  frame=single,
+  framerule=0.2pt,
+  rulecolor=\color{black!35},
+  backgroundcolor=\color{black!3},
+  showstringspaces=false,
+  upquote=true,
+  tabsize=2
+}
+\lstset{style=bashstyle}
+\BeforeBeginEnvironment{lstlisting}{\par\smallskip\noindent\begin{minipage}{\linewidth}}
+\AfterEndEnvironment{lstlisting}{\end{minipage}\par\smallskip}
+\newenvironment{boxx}{\begin{framed}\small}{\end{framed}}
+
+\begin{document}
+\begin{center}
+{\LARGE \textbf{Sieci komputerowe - ściąga na laby i kolokwium praktyczne}}\\[-1mm]
+{\small Linux/Cisco/VLAN/iptables/NAT. Bez WiFi. Najpierw adresacja, potem kable, adresy, routing, filtry/NAT, testy.}
+\end{center}
+
+\begin{multicols*}{2}
+\raggedcolumns
+
+\section{Plan działania na kolokwium 45 min}
+\begin{enumerate}
+  \item \kw{Przerysuj schemat i nadaj nazwy interfejsom.} Zaznacz, które urządzenie jest routerem, które sieci są rozłączne, gdzie ma być NAT/VLAN/firewall.
+  \item \kw{Adresacja daje dużo punktów.} Dla każdej domeny L2/VLAN/łącza punkt-punkt wybierz osobną sieć prywatną. Najwygodniej: \code{10.X.Y.0/24}, dla łączy P2P można \code{/30} albo też \code{/24}, jeśli nie ma wymogu oszczędzania.
+  \item \kw{Połącz fizycznie.} PC--switch i switch--router: prosty; PC--PC, router--router, switch--switch: krosowany, chyba że Auto MDI-X zadziała.
+  \item \kw{Wyczyść stare rzeczy.} Usuń stare IP/routing/iptables, podnieś interfejsy.
+  \item \kw{Nadaj adresy i sprawdź sąsiadów.} Najpierw pingi tylko między bezpośrednio połączonymi urządzeniami.
+  \item \kw{Włącz forwarding na Linux-routerach.} Potem dodaj trasy statyczne lub defaulty.
+  \item \kw{Dopiero na końcu iptables/NAT/VLAN.} Zawsze w skrypcie: flush, polityki, reguły.
+  \item \kw{Udowodnij działanie.} Ping/traceroute/ssh/ncat/Wireshark/liczniki iptables.
+\end{enumerate}
+
+\begin{boxx}
+\kw{Minimalny algorytm debugowania:} adresacja rozłączna? właściwe porty/kable? interfejsy \code{UP, LOWER_UP}? właściwe maski? brak starych adresów? ping do sąsiada? forwarding? trasa w obie strony? pakiet widać w Wiresharku na każdym hopie? iptables puste albo poprawne? usługa słucha na właściwym IP, nie tylko na \code{127.0.0.1}?
+\end{boxx}
+
+\section{Sprzęt w laboratorium}
+\subsection{PC i patch panel}
+\begin{itemize}
+  \item \code{em1} - główny interfejs, zwykle Internet/DHCP, w mostku \code{br0}; na patch panelu zwykle 4. gniazdo.
+  \item \code{p4p1} - port od okna/prawy; zwykle 1. gniazdo.
+  \item \code{p4p2} - port od drzwi/lewy; zwykle 2. gniazdo, czasem niepodpięty.
+  \item \code{/dev/ttyS0} - port szeregowy do konsoli Cisco; zwykle 3. gniazdo, płaski niebieski kabel.
+\end{itemize}
+\begin{lstlisting}
+# identyfikacja karty - miga dioda
+ethtool -p p4p1
+ethtool p4p1
+ip link show
+\end{lstlisting}
+
+\subsection{Cisco przez konsolę}
+\begin{lstlisting}
+picocom /dev/ttyS0          # zwykle 9600, stare/czarne
+picocom -b 115200 /dev/ttyS0 # nowe/biale switche
+# wyjscie: Ctrl-a, potem q
+\end{lstlisting}
+Jeśli po Enter nic nie ma: zły patch panel, zły kabel, zły baudrate, urządzenie nie włączone.
+
+\section{Adresacja IPv4, podsieci, agregacja}
+\subsection{Podstawy}
+Adres IPv4 = 32 bity. Maska \code{/n} mówi, ile bitów to sieć. Hosty w zwykłej sieci: \(2^{32-n}-2\) (bez adresu sieci i broadcastu). Adres sieci = IP AND maska. Broadcast = część hosta wypełniona jedynkami.
+
+{\scriptsize
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{0.9}
+\begin{tabular}{@{}c l r r@{}}
+\toprule
+Pref. & Maska & Adresy & Hosty \\
+\midrule
+/0 & 0.0.0.0 & \(4\,294\,967\,296\) & \(4\,294\,967\,294\) \\
+/1 & 128.0.0.0 & \(2\,147\,483\,648\) & \(2\,147\,483\,646\) \\
+/2 & 192.0.0.0 & \(1\,073\,741\,824\) & \(1\,073\,741\,822\) \\
+/3 & 224.0.0.0 & \(536\,870\,912\) & \(536\,870\,910\) \\
+/4 & 240.0.0.0 & \(268\,435\,456\) & \(268\,435\,454\) \\
+/5 & 248.0.0.0 & \(134\,217\,728\) & \(134\,217\,726\) \\
+/6 & 252.0.0.0 & \(67\,108\,864\) & \(67\,108\,862\) \\
+/7 & 254.0.0.0 & \(33\,554\,432\) & \(33\,554\,430\) \\
+/8 & 255.0.0.0 & \(16\,777\,216\) & \(16\,777\,214\) \\
+/9 & 255.128.0.0 & \(8\,388\,608\) & \(8\,388\,606\) \\
+/10 & 255.192.0.0 & \(4\,194\,304\) & \(4\,194\,302\) \\
+/11 & 255.224.0.0 & \(2\,097\,152\) & \(2\,097\,150\) \\
+/12 & 255.240.0.0 & \(1\,048\,576\) & \(1\,048\,574\) \\
+/13 & 255.248.0.0 & \(524\,288\) & \(524\,286\) \\
+/14 & 255.252.0.0 & \(262\,144\) & \(262\,142\) \\
+/15 & 255.254.0.0 & \(131\,072\) & \(131\,070\) \\
+/16 & 255.255.0.0 & \(65\,536\) & \(65\,534\) \\
+/17 & 255.255.128.0 & \(32\,768\) & \(32\,766\) \\
+/18 & 255.255.192.0 & \(16\,384\) & \(16\,382\) \\
+/19 & 255.255.224.0 & \(8\,192\) & \(8\,190\) \\
+/20 & 255.255.240.0 & \(4\,096\) & \(4\,094\) \\
+/21 & 255.255.248.0 & \(2\,048\) & \(2\,046\) \\
+/22 & 255.255.252.0 & \(1\,024\) & \(1\,022\) \\
+/23 & 255.255.254.0 & \(512\) & \(510\) \\
+/24 & 255.255.255.0 & \(256\) & \(254\) \\
+/25 & 255.255.255.128 & \(128\) & \(126\) \\
+/26 & 255.255.255.192 & \(64\) & \(62\) \\
+/27 & 255.255.255.224 & \(32\) & \(30\) \\
+/28 & 255.255.255.240 & \(16\) & \(14\) \\
+/29 & 255.255.255.248 & \(8\) & \(6\) \\
+/30 & 255.255.255.252 & \(4\) & \(2\) \\
+/31 & 255.255.255.254 & \(2\) & \(0^\ast\) \\
+/32 & 255.255.255.255 & \(1\) & \(1^\ast\) \\
+\bottomrule
+\end{tabular}
+}
+
+\subsection{Szybkie liczenie podsieci}
+\begin{itemize}
+  \item Dla \code{/n} rozmiar bloku w ostatnim zmiennym oktecie to \(256 - \text{wartość maski w tym oktecie}\).
+  \item Przykład \code{/28}: maska 240, blok 16: sieci kończą się na .0, .16, .32, .48, ... Hosty w \code{192.168.1.32/28}: .33--.46, broadcast .47.
+  \item Podział na \(p\) równych podsieci: pożycz \(x=\lceil \log_2(p)\rceil\) bitów, nowa maska = stara + \(x\).
+  \item VLSM: sortuj wymagania od największej liczby hostów, przydzielaj kolejne najmniejsze pasujące bloki.
+  \item Adresy prywatne: \code{10.0.0.0/8}, \code{172.16.0.0/12}, \code{192.168.0.0/16}.
+\end{itemize}
+
+\subsection{Agregacja tras}
+Agreguj tylko wtedy, gdy nadsieć nie obejmie cudzych/nieistniejących sieci, chyba że zadanie na to pozwala. Szukaj najdłuższego wspólnego prefiksu. Przykład: \code{192.168.0.0/24} i \code{192.168.1.0/24} = \code{192.168.0.0/23}. W praktyce na kolokwium często można zamiast wielu tras dać \kw{default route} do najbliższego routera.
+
+\section{Linux: interfejsy, IP, routing}
+\subsection{Czyszczenie i konfiguracja IP}
+\begin{lstlisting}
+ip addr show
+ip link show
+ip link set p4p1 up
+ip link set p4p1 down
+ip addr flush dev p4p1
+ip addr add 192.168.10.2/24 dev p4p1
+ip addr add 10.0.0.2/24 dev p4p1 label p4p1:1  # dodatkowy adres
+ip addr del 192.168.10.2/24 dev p4p1
+ip link set p4p1 address aa:bb:cc:dd:ee:ff
+ethtool -P p4p1  # permanent MAC
+\end{lstlisting}
+\kw{Czytaj \code{ip addr}:} nazwy interfejsów, MAC, \code{UP/DOWN}, adresy i sieci. Jeśli jest \code{DOWN}, podnieś. Jeśli brak \code{LOWER_UP}/lampki, sprawdź kabel/port.
+
+\subsection{Routing w Linuxie}
+\begin{lstlisting}
+ip route show
+ip route get 8.8.8.8
+ip route add 172.16.0.0/16 via 192.168.1.1
+ip route del 172.16.0.0/16
+ip route add default via 192.168.1.1
+ip route replace default via 192.168.1.1
+ip route flush cache  # rzadko potrzebne
+\end{lstlisting}
+\kw{Czytaj \code{ip route}:}
+\begin{itemize}
+  \item wpis bez \code{via}: sieć bezpośrednio podłączona; \code{src} to adres używany jako źródłowy;
+  \item wpis z \code{via}: pakiet idzie do bramy; brama musi leżeć w sieci bezpośrednio podłączonej;
+  \item \code{default}: trasa ostatniej szansy;
+  \item wybór trasy: najdłuższa maska $>$ niższy metric $>$ pierwszy pasujący wpis.
+\end{itemize}
+
+\subsection{Forwarding - Linux jako router}
+\begin{lstlisting}
+cat /proc/sys/net/ipv4/ip_forward
+echo 1 > /proc/sys/net/ipv4/ip_forward
+sysctl net.ipv4.ip_forward
+sysctl -w net.ipv4.ip_forward=1
+# alternatywnie w niektorych zadaniach:
+sysctl -w net.ipv4.conf.all.forwarding=1
+\end{lstlisting}
+Bez forwardingu Linux przyjmie pakiety do siebie, ale nie przekaże ich dalej. Forwarding jest niezależny od NAT.
+
+\subsection{ARP i DHCP}
+\begin{lstlisting}
+ip neigh show
+ip neigh flush dev p4p1
+ip neigh add 192.168.1.10 lladdr aa:bb:cc:dd:ee:ff dev p4p1
+ip neigh del 192.168.1.10 dev p4p1
+arping -I p4p1 192.168.1.10
+ip link set arp off dev p4p1
+ip link set arp on dev p4p1
+
+# DHCP, jesli trzeba odnowic em1/p4p1
+dhclient -r -v em1
+dhclient -v em1
+journalctl -f
+cat /etc/resolv.conf
+cat /var/lib/dhclient/dhclient.leases  # czasem /var/lib/dhcp/...
+\end{lstlisting}
+ARP działa tylko w lokalnej domenie L2/VLAN. Jeśli pingujesz host z innej sieci, ARP powinien być do bramy, nie do hosta docelowego.
+
+\section{Cisco routery: tryby, adresy, routing}
+\subsection{Powłoka i diagnostyka}
+\begin{lstlisting}
+Router> enable
+Router# configure terminal
+Router(config)# hostname R1
+R1(config)# end                 # albo Ctrl-z
+R1# show running-config
+R1# show interfaces
+R1# show interface GigabitEthernet 0/1
+R1# show ip interface brief     # nie pokazuje secondary!
+R1# show ip route
+R1# show cdp neighbors
+R1# ping 192.168.1.2
+R1# traceroute 192.168.3.2 numeric
+\end{lstlisting}
+Skróty: \code{?}, Tab, \code{do show ...} w trybie konfiguracji, \code{no <komenda>} odwraca działanie, \code{no shutdown} podnosi interfejs.
+
+\subsection{Adresy na interfejsach}
+\begin{lstlisting}
+R1# conf t
+R1(config)# interface GigabitEthernet 4
+R1(config-if)# ip address 192.168.1.1 255.255.255.0
+R1(config-if)# no shutdown
+R1(config-if)# exit
+R1(config)# interface GigabitEthernet 5
+R1(config-if)# ip address 10.0.0.1 255.255.255.252
+R1(config-if)# no shutdown
+R1(config-if)# end
+\end{lstlisting}
+Routery z labu: \code{Gi4/Gi5} są zwykłymi portami L3. \code{Gi0-Gi3} mogą być za wewnętrznym switchem; wtedy adres nadaje się na \code{interface Vlan1}, a kabel można wpiąć w dowolny \code{Gi0-Gi3}.
+
+\subsection{Kilka adresów bez VLANów: secondary}
+\begin{lstlisting}
+R1# conf t
+R1(config)# interface FastEthernet 0/0
+R1(config-if)# ip address 192.168.1.1 255.255.255.0
+R1(config-if)# ip address 172.16.13.13 255.255.128.0 secondary
+R1(config-if)# ip address 10.10.10.10 255.255.240.0 secondary
+R1(config-if)# no shutdown
+R1(config-if)# do show ip interface FastEthernet 0/0
+\end{lstlisting}
+\warn{\code{show ip interface brief} pokaże tylko adres główny, nie secondary.}
+
+\subsection{Routing statyczny Cisco}
+\begin{lstlisting}
+R1# show ip route
+R1# conf t
+R1(config)# ip route 172.16.0.0 255.255.0.0 192.168.1.111
+R1(config)# ip route 0.0.0.0 0.0.0.0 192.168.1.1
+R1(config)# no ip route 172.16.0.0 255.255.0.0 192.168.1.111
+\end{lstlisting}
+Pakiet zwrotny też musi mieć trasę. Jeśli ping działa tylko w jedną stronę w Wiresharku, prawie zawsze brakuje routingu powrotnego albo filtr/NAT go zmienia.
+
+\section{OSPF Cisco - gdy pojawi się routing dynamiczny}
+\begin{lstlisting}
+R1# conf t
+R1(config)# router ospf 1
+R1(config-router)# network 10.0.0.0 0.0.255.255 area 0
+R1(config-router)# auto-cost reference-bandwidth 1000
+R1(config-router)# default-information originate  # tylko gdy jest default
+R1(config-router)# exit
+R1(config)# interface GigabitEthernet 0/1
+R1(config-if)# bandwidth 25000     # 25 Mb/s; IOS zwykle podaje kb/s
+R1(config-if)# ip ospf cost 17     # reczny koszt OSPF, nadpisuje bandwidth
+\end{lstlisting}
+\begin{lstlisting}
+R1# show ip ospf neighbor
+R1# show ip protocols
+R1# show ip ospf interface
+R1# show ip ospf database
+R1# show ip route
+\end{lstlisting}
+Wildcard mask w \code{network}: odwrotność maski. \code{/24} = \code{0.0.0.255}, \code{/16} = \code{0.0.255.255}. OSPF ma AD 110, trasa statyczna AD 1 wygra z OSPF.
+
+\section{VLANy i router-on-a-stick}
+\subsection{Zasady}
+VLAN = osobna domena rozgłoszeniowa w warstwie 2. Hosty w różnych VLANach nie komunikują się bez routera, nawet jeśli wpiszesz im adresy z tej samej sieci IP. Połączenie przenoszące wiele VLANów to \kw{trunk}; ramki dostają tag 802.1Q. Port do zwykłego PC jest \kw{access}.
+
+\subsection{Najpierw rozpoznaj porty}
+Nie ucz się numerów portów na pamięć. Najpierw sprawdź, jak urządzenie nazywa porty, a potem podstaw właściwe nazwy w miejsce \code{<PORT_PC>} i \code{<PORT_TRUNK>}.
+\begin{lstlisting}
+S1# show ip interface brief
+S1# show interface status
+S1# show interfaces status
+S1# show vlan
+S1# show vlan brief
+S1# show vlan-switch
+S1# show interfaces trunk
+\end{lstlisting}
+Jeśli \code{show vlan} jest niejednoznaczne, wpisz \code{show vlan ?}. Na części starszych Cisco/EtherSwitch właściwa komenda to \code{show vlan-switch}; na części nowszych wystarcza \code{show vlan} albo \code{show vlan brief}. W wyjściu nowych/białych switchy porty \code{tagged} zwykle oznaczają trunk, a \code{untagged} port access.
+
+\subsection{Tworzenie VLANów: normalny IOS}
+\begin{lstlisting}
+S1# conf t
+S1(config)# vlan <VLAN_ID>
+S1(config-vlan)# name <NAZWA>
+S1(config-vlan)# exit
+S1(config)# end
+\end{lstlisting}
+\code{vlan <VLAN_ID>} tworzy albo wybiera VLAN. \code{name} nadaje tylko etykietę dla człowieka; separację robi numer VLAN. Domyślnie VLAN jest aktywny.
+
+\subsection{Tworzenie VLANów: starszy vlan database}
+Na niektórych starych/czarnych switchach \code{vlan database} działa z trybu uprzywilejowanego \code{S1\#}, a nie z \code{conf t}. W tym trybie \code{end} może być błędem; wychodzisz przez \code{exit}, co zapisuje zmiany.
+\begin{lstlisting}
+S1> enable
+S1# vlan database
+S1(vlan)# vlan <VLAN_ID> name <NAZWA>
+S1(vlan)# exit
+\end{lstlisting}
+Po utworzeniu VLANów wracasz do zwykłego \code{conf t} i dopiero tam przypisujesz porty.
+
+\subsection{Port access dla zwykłego hosta}
+\begin{lstlisting}
+S1# conf t
+S1(config)# interface <PORT_PC>
+S1(config-if)# switchport mode access
+S1(config-if)# switchport access vlan <VLAN_ID>
+S1(config-if)# no shutdown
+S1(config-if)# end
+\end{lstlisting}
+\code{interface <PORT_PC>} wybiera port z listy \code{show ...}. \code{switchport mode access} wymusza tryb jednego, nietagowanego VLANu. \code{switchport access vlan <VLAN_ID>} przypisuje ten port do VLANu hosta; samo nie robi trunku.
+
+\subsection{Port trunk między switchami albo do routera}
+\begin{lstlisting}
+S1# conf t
+S1(config)# interface <PORT_TRUNK>
+S1(config-if)# switchport trunk encapsulation dot1q
+S1(config-if)# switchport mode trunk
+S1(config-if)# no shutdown
+S1(config-if)# end
+S1# show interfaces trunk
+\end{lstlisting}
+\code{switchport mode trunk} przenosi wiele VLANów przez jeden kabel. \code{switchport trunk encapsulation dot1q} jest potrzebne tylko na starszych urządzeniach, które pozwalają wybrać enkapsulację; jeśli komenda jest nieznana, zwykle dot1q jest jedyną opcją i przechodzisz dalej.
+
+\subsection{Router między VLANami}
+Port router--switch też musi być trunk. Na routerze nie nadajesz IP na fizycznym interfejsie, tylko na podinterfejsach.
+\begin{lstlisting}
+R1# conf t
+R1(config)# interface <PORT_DO_SWITCHA>
+R1(config-if)# no ip address
+R1(config-if)# no shutdown
+R1(config-if)# interface <PORT_DO_SWITCHA>.<VLAN_A>
+R1(config-subif)# encapsulation dot1Q <VLAN_A>
+R1(config-subif)# ip address <BRAMA_A> <MASKA_A>
+R1(config-subif)# interface <PORT_DO_SWITCHA>.<VLAN_B>
+R1(config-subif)# encapsulation dot1Q <VLAN_B>
+R1(config-subif)# ip address <BRAMA_B> <MASKA_B>
+R1(config-subif)# end
+R1# show ip interface brief
+\end{lstlisting}
+\code{encapsulation dot1Q <VLAN>} mówi, jaki tag 802.1Q obsługuje dany podinterfejs. Adres IP podinterfejsu jest bramą domyślną dla hostów w tym VLANie. Jeśli dwa switche przenoszą VLANy, wszystkie połączenia między nimi muszą być trunkami.
+
+\subsection{Jak udowodnić VLANy}
+\begin{itemize}
+  \item Hosty w tym samym VLANie pingują się przez switche.
+  \item Hosty w różnych VLANach bez routera nie pingują się.
+  \item Wireshark na porcie access nie widzi broadcastów z innych VLANów.
+  \item Wygeneruj broadcast: \code{arping -I p4p1 <nieuzyty-adres-w-mojej-sieci>} albo ping do nieużytego adresu w swojej podsieci, bo host wyśle ARP broadcast.
+\end{itemize}
+
+\section{Warstwa transportowa i ncat do testów}
+\subsection{Porty i procesy}
+\begin{lstlisting}
+netstat -tunap
+netstat -tunap | grep ssh
+ss -tunap
+cat /etc/services | grep -w 74
+systemctl status sshd
+systemctl start sshd
+ssh -v user@192.168.1.10
+ssh -vv user@192.168.1.10
+\end{lstlisting}
+Porty: 1--1023 uprzywilejowane, 1024--49151 zarejestrowane, 49152--65535 efemeryczne. TCP ma stany \code{LISTEN}, \code{SYN-SENT}, \code{ESTABLISHED}, \code{TIME-WAIT}; UDP jest bezpołączeniowy.
+
+\subsection{Ncat: symulacja usług}
+\begin{lstlisting}
+# TCP server i klient
+ncat -l 192.168.1.55 1234
+ncat 192.168.1.55 1234
+
+# UDP
+ncat -ul 192.168.1.55 1234
+ncat -u 192.168.1.55 1234
+
+# zapis/odczyt pliku
+ncat -l 192.168.1.55 1234 > out.txt
+ncat 192.168.1.55 1234 < in.txt
+
+# wiele polaczen i echo
+ncat -lk 192.168.1.55 1234 -c 'while true; do read i && echo [echo] $i; done'
+
+# prosty HTTP
+ncat www.cs.put.poznan.pl 80
+GET /tkobus/ HTTP/1.0
+
+\end{lstlisting}
+\warn{Do testów DNAT usługa musi słuchać na adresie osiągalnym z sieci, np. \code{192.168.111.1}, a nie tylko na \code{127.0.0.1}.}
+
+\section{iptables: model mentalny}
+\subsection{Netfilter, tabele i łańcuchy}
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+\toprule
+Tabela & Do czego \\
+\midrule
+\code{filter} & firewall: przepuszcza/blokuje pakiety. Łańcuchy: \code{INPUT}, \code{FORWARD}, \code{OUTPUT}. \\
+\code{nat} & translacja adresów/portów. Łańcuchy: \code{PREROUTING}, \code{OUTPUT}, \code{POSTROUTING}. \\
+\code{mangle} & modyfikacje pakietu, np. TTL. Łańcuchy: \code{PREROUTING}, \code{INPUT}, \code{FORWARD}, \code{OUTPUT}, \code{POSTROUTING}. \\
+\code{raw} & przed conntrackiem, rzadko na SK. \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Przepływ pakietu przez Linuxa}
+\begin{itemize}
+  \item Do samego Linuxa: \code{PREROUTING -> routing -> INPUT}.
+  \item Wygenerowany lokalnie: \code{OUTPUT -> routing -> POSTROUTING}.
+  \item Przekazywany przez router: \code{PREROUTING -> routing -> FORWARD -> POSTROUTING}.
+\end{itemize}
+Z tego wynika: \code{INPUT} nie filtruje ruchu przechodzącego przez router; do tego jest \code{FORWARD}. \code{PREROUTING} nie zna jeszcze interfejsu wyjściowego \code{-o}. \code{POSTROUTING} nie używa \code{-i}. DNAT zwykle robi się w \code{PREROUTING}, SNAT/MASQUERADE w \code{POSTROUTING}.
+
+\subsection{Najważniejsze zasady}
+\begin{itemize}
+  \item Reguły są sprawdzane od góry. Pierwsza decydująca reguła kończy przetwarzanie danego łańcucha.
+  \item \code{DROP} ignoruje pakiet; klient czeka/timeout. \code{REJECT} odrzuca aktywnie, zwykle szybciej widać błąd; w Wiresharku pojawi się odpowiedź ICMP albo TCP RST zależnie od protokołu/opcji.
+  \item Polityka \code{-P} działa, gdy żadna reguła nie pasuje. Na kolokwium blokowanie całego ruchu wejściowego rób polityką: \code{iptables -P INPUT DROP}.
+  \item NAT korzysta z conntracka: odpowiedzi są automatycznie odtłumaczane. Reguła NAT zwykle trafia tylko pierwszy pakiet połączenia; potem działa stan połączenia.
+  \item Dla routera z firewallem pamiętaj o \code{FORWARD}; przy polityce \code{FORWARD DROP} musisz dopuścić ruch routowany i powrotny.
+\end{itemize}
+
+\section{iptables: składnia, reset, liczniki}
+\subsection{Składnia i operacje}
+\begin{lstlisting}
+iptables [-t tabela] OPCJA LANCUCH [match...] -j CEL
+
+# listowanie
+iptables -L
+iptables -t nat -L
+iptables -t filter -L -n -v -x --line-numbers
+iptables -S
+iptables -t nat -S
+iptables-save
+
+# polityki
+iptables -P INPUT DROP
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+# dodawanie/usuwanie/czyszczenie
+iptables -A INPUT ...        # append na koniec
+iptables -I INPUT 1 ...      # insert na pozycje 1
+iptables -D INPUT 3          # usun 3. regule
+iptables -D INPUT ...        # usun regule po tresci
+iptables -F INPUT            # flush lancucha
+iptables -F                  # flush filter
+iptables -t nat -F           # flush nat
+iptables -X                  # usun wlasne lancuchy
+iptables -Z                  # wyzeruj liczniki
+\end{lstlisting}
+
+\subsection{Bezpieczny szkielet skryptu}
+\begin{lstlisting}
+#!/bin/bash
+set -e
+
+# 1. Wyczyść. Najpierw polityki ACCEPT, zeby nie odciac sie podczas pracy.
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+iptables -F
+iptables -t nat -F
+iptables -t mangle -F
+iptables -X
+iptables -Z
+
+# opcjonalnie IPv6, zeby nie mieszalo w testach IPv6
+ip6tables -P INPUT ACCEPT 2>/dev/null || true
+ip6tables -P FORWARD ACCEPT 2>/dev/null || true
+ip6tables -P OUTPUT ACCEPT 2>/dev/null || true
+ip6tables -F 2>/dev/null || true
+
+# 2. Polityki docelowe
+iptables -P INPUT DROP
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+# 3. Reguly od najbardziej szczegolowych do ogolnych
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+\end{lstlisting}
+\warn{Jeśli pracujesz lokalnie w labie, nie ma ryzyka utraty SSH do własnego PC, ale kolejność nadal ma znaczenie.}
+
+\section{iptables: match-e i cele}
+\subsection{Najczęstsze dopasowania}
+\begin{lstlisting}
+-s 192.168.1.0/24        # source
+-d 10.0.0.5              # destination
+-i p4p1                  # interfejs wejsciowy
+-o em1                   # interfejs wyjsciowy
+-p tcp                   # tcp/udp/icmp
+-p tcp --dport 22        # port docelowy
+-p tcp --sport 12345     # port zrodlowy
+-p udp --dport 53
+-p icmp --icmp-type echo-request
+! -s 192.168.1.55        # negacja
+-m mac --mac-source aa:bb:cc:dd:ee:ff
+-m owner --gid-owner 1006
+-m comment --comment "opis reguly"
+\end{lstlisting}
+
+\subsection{Conntrack - filtr stanowy}
+\begin{lstlisting}
+# wpuszczaj odpowiedzi na polaczenia zainicjowane przez nas
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# na routerze z FORWARD DROP: pozwol sieci LAN wychodzic i odpowiedziom wracac
+iptables -P FORWARD DROP
+iptables -A FORWARD -i p4p1 -o em1 -s 192.168.1.0/24 -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -i em1 -o p4p1 -d 192.168.1.0/24 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+\end{lstlisting}
+Stany: \code{NEW} - nowy przepływ, \code{ESTABLISHED} - część znanego połączenia, \code{RELATED} - powiązane, np. część ICMP błędów, \code{INVALID} - śmieci/niepasujące.
+
+\subsection{Connlimit - limit SSH}
+\begin{lstlisting}
+# maksymalnie 2 polaczenia SSH z jednego adresu IP klienta
+iptables -A INPUT -p tcp --dport 22 -m connlimit --connlimit-above 2 -j DROP
+
+# globalnie maksymalnie 2 polaczenia SSH lacznie
+iptables -A INPUT -p tcp --dport 22 -m connlimit --connlimit-above 2 --connlimit-mask 0 -j DROP
+
+# po limitach dopiero akceptacja SSH z dozwolonych zrodel
+iptables -A INPUT -p tcp --dport 22 ! -s 192.168.1.55 -j ACCEPT
+\end{lstlisting}
+\warn{Limit musi być przed ogólnym \code{ACCEPT tcp dpt:22}, inaczej nigdy nie zadziała.}
+
+\section{iptables: gotowe filtry do zadań}
+\subsection{Blokuj wszystko wejściowe, ale zostaw SSH/ping/odpowiedzi}
+\begin{lstlisting}
+iptables -F
+iptables -P INPUT DROP
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+\end{lstlisting}
+\ok{Z innego hosta: ping działa; \code{ssh} działa; inne porty nie działają. Liczniki: \code{iptables -L -n -v -x --line-numbers}.}
+
+\subsection{Zabroń SSH z jednego adresu bez kasowania reguł}
+Użyj \code{-I}, bo reguły są od góry, a wcześniejszy \code{ACCEPT ssh} byłby silniejszy.
+\begin{lstlisting}
+iptables -I INPUT 1 -p tcp -s 192.168.1.55 --dport 22 -j REJECT
+# albo DROP, jesli chcesz timeout zamiast szybkiej odmowy
+\end{lstlisting}
+
+\subsection{Blokuj wyjście do WWW / hosta}
+\begin{lstlisting}
+iptables -A OUTPUT -p tcp -d www.cs.put.poznan.pl -j DROP
+# gdy DNS rozwiąże na IP albo chcesz ominąć DNS:
+iptables -A OUTPUT -p tcp -d 150.254.30.30 -j DROP
+\end{lstlisting}
+\warn{Reguła z nazwą DNS jest rozwijana w momencie dodawania reguły, nie dynamicznie przy każdym pakiecie.}
+
+\subsection{Ruch tylko do jednej sieci dla grupy}
+\begin{lstlisting}
+iptables -A OUTPUT -m owner --gid-owner 1006 ! -d 192.168.1.0/24 -j DROP
+\end{lstlisting}
+
+\subsection{Blokuj nowe TCP SYN, nie ruszając istniejących}
+\begin{lstlisting}
+iptables -A INPUT -p tcp --syn -j DROP
+# rownowaznie:
+iptables -A INPUT -p tcp --tcp-flags SYN,RST,ACK,FIN SYN -j DROP
+\end{lstlisting}
+
+\section{NAT: zasady i niuanse}
+\subsection{Co zmienia SNAT/MASQUERADE/DNAT}
+\begin{tabularx}{\linewidth}{@{}l X X@{}}
+\toprule
+Mechanizm & Gdzie & Sens \\
+\midrule
+\code{SNAT} & \code{nat POSTROUTING} & Zmienia adres/port źródłowy pakietu wychodzącego. Używany, gdy znasz adres zewnętrzny routera. \\
+\code{MASQUERADE} & \code{nat POSTROUTING} & SNAT automatycznie na adres interfejsu \code{-o}. Dobre dla DHCP/zmiennego IP. \\
+\code{DNAT} & \code{nat PREROUTING} & Zmienia adres/port docelowy przed routingiem. Używany do przekierowania portu do hosta za NATem. \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Najważniejsze niuanse NAT}
+\begin{itemize}
+  \item \kw{NAT nie zastępuje routingu.} Router musi mieć trasy, hosty muszą mieć bramę zwrotną, forwarding musi być włączony.
+  \item \kw{SNAT i DNAT są niezależne.} SNAT: zmiana źródła w żądaniu, automatyczna zmiana celu w odpowiedzi. DNAT: zmiana celu w żądaniu, automatyczna zmiana źródła w odpowiedzi.
+  \item \kw{NAT działa stanowo.} Conntrack pamięta mapowania, także translację portów, gdy dwa hosty prywatne użyją tego samego portu źródłowego.
+  \item \kw{Zawężaj reguły.} Prawie zawsze dodaj \code{-s}, \code{-d}, \code{-i}, \code{-o}, \code{-p}, \code{--dport}. Zbyt ogólny SNAT na wszystkich interfejsach utrudnia debugowanie i może psuć komunikację lokalną.
+  \item \kw{DNAT wymaga drogi powrotnej.} Host docelowy za NATem powinien mieć default przez router NAT albo trzeba dodać SNAT, żeby odpowiedź wróciła przez NAT.
+  \item \kw{FORWARD może blokować DNAT.} Po DNAT pakiet jest routowany do hosta prywatnego, więc przechodzi przez \code{FORWARD}, nie \code{INPUT}.
+  \item \kw{Lokalny test z routera używa OUTPUT, nie PREROUTING.} Typowe zadanie testuje z innego PC, więc \code{PREROUTING} wystarcza.
+\end{itemize}
+
+\subsection{Włączenie routera NAT}
+\begin{lstlisting}
+sysctl -w net.ipv4.ip_forward=1
+# sprawdz trasy:
+ip route
+# sprawdz conntrack/reguly:
+iptables -t nat -L -n -v -x --line-numbers
+iptables -L FORWARD -n -v -x --line-numbers
+\end{lstlisting}
+
+\section{SNAT i MASQUERADE - gotowce}
+\subsection{Internet dla sieci prywatnej przez em1}
+\begin{lstlisting}
+# PC-router: p4p1 = LAN 192.168.1.1/24, em1 = internet/DHCP
+sysctl -w net.ipv4.ip_forward=1
+iptables -t nat -F
+iptables -t nat -A POSTROUTING -s 192.168.1.0/24 -o em1 -j MASQUERADE
+\end{lstlisting}
+Na hostach LAN: \code{ip route add default via 192.168.1.1}. DNS: skopiuj/ustaw \code{/etc/resolv.conf}, jeśli ping po IP działa, a po nazwie nie.
+
+\subsection{Klasyczny SNAT na stały adres routera}
+\begin{lstlisting}
+iptables -t nat -A POSTROUTING -s 192.168.1.0/24 -o em1 -j SNAT --to-source 150.254.32.66
+\end{lstlisting}
+Użyj \code{SNAT}, gdy adres zewnętrzny jest znany i stały. Użyj \code{MASQUERADE}, gdy interfejs ma DHCP albo może zmienić adres.
+
+\subsection{SNAT między dwiema prywatnymi sieciami}
+Przykład: PC2 łączy PC1 \code{192.168.1.0/24} i PC3 \code{192.168.111.0/24}. PC3 ma default do PC2, PC1 nie ma trasy do \code{192.168.111.0/24}. Żeby PC3 mógł łączyć się z PC1 bez dodawania trasy na PC1:
+\begin{lstlisting}
+# na PC2, interfejs do PC1 ma adres 192.168.1.2
+iptables -t nat -A POSTROUTING \
+  -s 192.168.111.0/24 -d 192.168.1.0/24 \
+  -j SNAT --to-source 192.168.1.2
+\end{lstlisting}
+PC1 widzi ruch tak, jakby pochodził z PC2 \code{192.168.1.2}, więc odpowiada do PC2, a conntrack odtłumacza odpowiedź do PC3.
+
+\section{DNAT - przekierowanie portów}
+\subsection{Prosty port forward do hosta za NATem}
+Założenie: PC1 łączy się z adresem PC2 od strony PC1, a usługa działa na PC3 \code{192.168.111.1:74}. PC2 ma forwarding.
+\begin{lstlisting}
+# na PC2
+iptables -t nat -A PREROUTING -i p4p1 -p tcp --dport 74 \
+  -j DNAT --to-destination 192.168.111.1:74
+\end{lstlisting}
+Test:
+\begin{lstlisting}
+# PC3
+ncat -l 192.168.111.1 74
+# PC1 laczy sie z adresem PC2 w sieci PC1-PC2
+ncat 192.168.1.2 74
+\end{lstlisting}
+PC1 nie musi znać PC3. PC3 musi umieć odpowiedzieć przez PC2, np. \code{default via 192.168.111.2}.
+
+\subsection{Przekierowanie SSH na inny port}
+\begin{lstlisting}
+# PC2: port 1234 na PC2 -> SSH PC3:22
+iptables -t nat -A PREROUTING -i p4p1 -p tcp --dport 1234 \
+  -j DNAT --to-destination 192.168.111.1:22
+# PC1:
+ssh -p 1234 user@192.168.1.2
+\end{lstlisting}
+Jeżeli \code{FORWARD DROP}, dodaj:
+\begin{lstlisting}
+iptables -A FORWARD -i p4p1 -o p4p2 -p tcp -d 192.168.111.1 --dport 22 \
+  -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -i p4p2 -o p4p1 -p tcp -s 192.168.111.1 --sport 22 \
+  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+\end{lstlisting}
+
+\subsection{DNAT bez trasy zwrotnej? Dodaj SNAT}
+Jeśli host docelowy nie ma defaultu przez router NAT, odpowiedź pójdzie inną drogą albo zginie. Wtedy możesz wymusić, żeby dla DNAT-owanych połączeń źródłem był adres routera od strony hosta prywatnego:
+\begin{lstlisting}
+# DNAT z PC1 do PC3
+iptables -t nat -A PREROUTING -i p4p1 -p tcp --dport 74 \
+  -j DNAT --to-destination 192.168.111.1:74
+# SNAT odpowiedniego ruchu, zeby PC3 odpowiadal do PC2
+iptables -t nat -A POSTROUTING -o p4p2 -p tcp -d 192.168.111.1 --dport 74 \
+  -j SNAT --to-source 192.168.111.2
+\end{lstlisting}
+
+\section{Mangle i TTL}
+\subsection{Ustawienie TTL dla ruchu przechodzącego przez router}
+Przykład z zadania NAT: pakiety z PC3 \code{192.168.111.0/24} do PC1 \code{192.168.1.0/24} mają wychodzić z PC2 z TTL=1.
+\begin{lstlisting}
+iptables -t mangle -A POSTROUTING \
+  -s 192.168.111.0/24 -d 192.168.1.0/24 \
+  -j TTL --ttl-set 1
+iptables -t mangle -L -n -v -x --line-numbers
+\end{lstlisting}
+\warn{W \code{POSTROUTING} ustawiasz TTL tuż przed wyjściem. Host docelowy może zobaczyć TTL=1; gdyby po drodze był kolejny router, pakiet by wygasł. Do obserwacji użyj Wiresharka.}
+
+\section{Kompletny przykład NAT z trzema PC}
+\subsection{Topologia}
+\begin{lstlisting}
+PC1 p4p1 192.168.1.1/24  ---  p4p1 192.168.1.2/24 PC2
+PC2 p4p2 192.168.111.2/24 --- p4p2 192.168.111.1/24 PC3
+PC2 em1  Internet/DHCP
+PC3 default via 192.168.111.2
+PC2 forwarding = 1
+\end{lstlisting}
+PC1 może nie mieć defaultu, jeśli nie testujesz Internetu z PC1. PC3 powinien mieć default przez PC2.
+
+\subsection{Skrypt na PC2}
+\begin{lstlisting}
+#!/bin/bash
+set -e
+sysctl -w net.ipv4.ip_forward=1
+
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+iptables -F
+iptables -t nat -F
+iptables -t mangle -F
+iptables -X
+iptables -Z
+
+# Internet dla sieci za PC2 przez em1
+iptables -t nat -A POSTROUTING -o em1 -j MASQUERADE
+
+# PC3 -> PC1 bez trasy zwrotnej na PC1: PC1 widzi zrodlo 192.168.1.2
+iptables -t nat -A POSTROUTING \
+  -s 192.168.111.0/24 -d 192.168.1.0/24 \
+  -j SNAT --to-source 192.168.1.2
+
+# obserwacja TTL dla ruchu PC3 -> PC1
+iptables -t mangle -A POSTROUTING \
+  -s 192.168.111.0/24 -d 192.168.1.0/24 \
+  -j TTL --ttl-set 1
+
+# PC1 -> PC2:74 zostaje przekierowane na PC3:74
+iptables -t nat -A PREROUTING -i p4p1 -p tcp --dport 74 \
+  -j DNAT --to-destination 192.168.111.1:74
+
+# PC1 -> PC2:1234 zostaje przekierowane na PC3:ssh
+iptables -t nat -A PREROUTING -i p4p1 -p tcp --dport 1234 \
+  -j DNAT --to-destination 192.168.111.1:22
+\end{lstlisting}
+
+\subsection{Testy do tego przykładu}
+\begin{lstlisting}
+# PC2
+iptables -t nat -L -n -v -x --line-numbers
+iptables -t mangle -L -n -v -x --line-numbers
+
+# PC3
+ip route replace default via 192.168.111.2
+ping 192.168.1.1          # PC1 zobaczy zrodlo 192.168.1.2 po SNAT
+ncat -l 192.168.111.1 74
+systemctl start sshd
+
+# PC1
+ncat 192.168.1.2 74
+ssh -p 1234 user@192.168.1.2
+\end{lstlisting}
+W Wiresharku porównaj adresy na PC1, PC2-p4p1, PC2-p4p2, PC3. Przy SNAT zmienia się źródło; przy DNAT cel; odpowiedzi są odtłumaczane odwrotnie.
+
+\newpage\section{Typowe układy routingu na kolokwium}
+\subsection{Dwa LAN-y przez jeden router Linux}
+\begin{lstlisting}
+PC1 192.168.10.2/24 -- p4p1 R 192.168.10.1/24
+PC2 192.168.20.2/24 -- p4p2 R 192.168.20.1/24
+
+# R
+sysctl -w net.ipv4.ip_forward=1
+# PC1
+ip route add default via 192.168.10.1
+# PC2
+ip route add default via 192.168.20.1
+\end{lstlisting}
+Test: \code{PC1 ping 192.168.20.2}; traceroute pokaże router.
+
+\subsection{Łańcuch PC1--PC2--PC3}
+\begin{lstlisting}
+PC1 p4p1 10.0.12.1/24 -- 10.0.12.2/24 p4p1 PC2
+PC2 p4p2 10.0.23.2/24 -- 10.0.23.3/24 p4p1 PC3
+
+# PC2
+sysctl -w net.ipv4.ip_forward=1
+# PC1
+ip route add 10.0.23.0/24 via 10.0.12.2
+# PC3
+ip route add 10.0.12.0/24 via 10.0.23.2
+\end{lstlisting}
+Alternatywnie defaulty na PC1 i PC3 do PC2.
+
+\subsection{Kilka sieci za jedną bramą}
+Jeśli za routerem R2 są \code{10.20.1.0/24}, \code{10.20.2.0/24}, ... i wszystko idzie przez ten sam next-hop, możesz dodać nadsieć, np. \code{10.20.0.0/16 via <R2>}, o ile nie obejmuje to błędnych sieci w zadaniu. Default route jest jeszcze prostszy, jeśli cały nieznany ruch ma iść w tamtą stronę.
+
+\section{Wireshark, ping, traceroute - demonstracja}
+\subsection{Co pokazać prowadzącemu}
+\begin{itemize}
+  \item \kw{Routing:} ping między końcowymi hostami, \code{traceroute -I}, \code{mtr}, tablice \code{ip route}/\code{show ip route}.
+  \item \kw{Filtry:} ping działa, SSH nie działa albo odwrotnie; pokaż \code{iptables -L -n -v -x --line-numbers}; porównaj \code{DROP} vs \code{REJECT} w Wiresharku.
+  \item \kw{SNAT/MASQUERADE:} host prywatny wychodzi do innej sieci, ale z zewnątrz nie da się go bezpośrednio osiągnąć; w Wiresharku źródło po wyjściu z routera = adres routera.
+  \item \kw{DNAT:} nie łączysz się bezpośrednio z PC3, tylko z adresem/portem PC2, a trafiasz na usługę PC3.
+  \item \kw{VLAN:} hosty w różnych VLANach nie widzą broadcastów; po routerze między VLANami ping działa.
+\end{itemize}
+
+\subsection{Traceroute i TTL}
+\begin{lstlisting}
+ping -c 3 192.168.20.2
+ping -s 4000 192.168.20.2     # fragmentacja, do obserwacji
+traceroute -I 192.168.20.2    # ICMP
+traceroute -T 192.168.20.2    # TCP
+tracepath 192.168.20.2
+mtr 192.168.20.2
+\end{lstlisting}
+Traceroute działa przez zwiększanie TTL i odpowiedzi ICMP Time Exceeded od kolejnych routerów. Brak odpowiedzi z hopa nie zawsze znaczy brak routingu - firewall może blokować ICMP.
+
+\section{Checklista „nie działa”}
+\begin{enumerate}
+  \item \kw{Adresacja:} czy każda domena L2 ma inną sieć? Czy maski są takie same po obu stronach? Czy host nie ma starego adresu z poprzedniego zadania?
+  \item \kw{Warstwa fizyczna:} czy port świeci? \code{ip link}/\code{ethtool}; Cisco \code{show ip interface brief}; właściwy kabel i patch panel?
+  \item \kw{Lokalny ping:} najpierw ping tylko do bezpośredniego sąsiada. Jeśli nie działa, routing nie ma znaczenia - problem jest L1/L2/IP/maska/ARP.
+  \item \kw{ARP:} \code{ip neigh}; czy ARP jest do sąsiada/bramy, a nie do zdalnego hosta?
+  \item \kw{Forwarding:} na routerach Linux \code{sysctl net.ipv4.ip_forward}; na Cisco routing działa domyślnie między interfejsami L3.
+  \item \kw{Trasy w obie strony:} źródło wie, gdzie wysłać? Każdy router wie, gdzie dalej? Cel wie, gdzie odesłać odpowiedź?
+  \item \kw{iptables/NAT:} \code{iptables -L -n -v -x}, \code{iptables -t nat -L -n -v -x}; czy polityki nie blokują? Czy reguły są zbyt ogólne? Czy SNAT nie działa na złym interfejsie?
+  \item \kw{Usługa:} \code{netstat -tunap | grep PORT}; czy słucha na właściwym IP? Czy port nie jest zajęty przez inny proces? Zabij proces lub zmień port.
+  \item \kw{SSH:} \code{systemctl status sshd}; \code{systemctl start sshd}; \code{ssh localhost}; \code{ssh -vv user@host}.
+  \item \kw{Wireshark:} sprawdź na każdym interfejsie, czy pakiet idzie w obie strony. Jedna strona bez odpowiedzi = routing powrotny, filtr albo NAT.
+\end{enumerate}
+
+\section{Mini-receptury końcowe}
+\subsection{Komputer z Internetem dla dwóch hostów przez switch}
+Jeśli dwa hosty mają być w tej samej sieci prywatnej i wychodzić przez PC-router: hosty do switcha, router LAN do switcha, router WAN przez \code{em1}. Hosty default do adresu LAN routera; router \code{ip_forward=1} i \code{MASQUERADE -o em1}. Jeśli hosty są w \kw{różnych} sieciach, potrzebujesz routingu między tymi sieciami: albo dwa interfejsy routera, albo VLANy + router-on-a-stick, albo osobne routery.
+
+\subsection{Default route - kiedy używać}
+Użyj defaultu na hostach końcowych prawie zawsze: host zwykle zna tylko swoją sieć lokalną i bramę. Na routerach używaj defaultu, jeśli cały nieznany ruch ma iść w jedną stronę. Nie dodawaj dwóch defaultów bez potrzeby, bo wybór zależy od metric/kolejności i utrudnia debugowanie.
+
+\subsection{Minimalny zapis konfiguracji na kartce}
+Dla każdej sieci zapisz: \code{nazwa sieci / prefix}, interfejsy, adresy, bramy. Dla każdego routera zapisz: trasy do sieci niebezpośrednich. Dla NAT/firewall zapisz: wejście/wyjście, źródło, cel, port, tabela/łańcuch.
+
+\end{multicols*}
+\end{document}

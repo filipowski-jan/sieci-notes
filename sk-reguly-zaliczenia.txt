@@ -1,0 +1,157 @@
+Jak będzie wyglądać zaliczenie?
+Zaliczenie z SK ma charakter praktyczny. Każda z osób przystępujących do kolokwium będzie miała do dyspozycji jeden rząd komputerów i wybrany sprzęt na zapleczu oraz 45 minut na skonfigurowanie prostej sieci. Podobnie jak to było w czasie zaliczeń praktycznych w poprzednich latach, można korzystać z notatek. Naturalnie zadanie należy wykonywać samodzielnie.
+
+Zadanie na zaliczeniu będzie określone przez schemat prostej sieci i listę rzeczy, które trzeba skonfigurować (przykładowe schematy poniżej). Dla przedstawionego schematu trzeba będzie:
+
+zaproponować adresację w oparciu o adresy prywatne i zadaną maskę/maski, zaznaczyć tę adresację na schemacie,
+
+połączyć odpowiednio urządzenia między sobą,
+
+przypisać adresy do urządzeń zgodnie z zaproponowaną adresacją,
+
+skonfigurować routing między urządzeniami,
+
+ewentualnie ustawić dodatkowe rzeczy, w zależności od tego co jest w zadaniu, np.:
+
+proste filtry w iptables,
+
+prosta translacja adresów,
+
+VLANy na switchu/routerze.
+
+Trzeba umieć zademonstrować, że routing/filtry/NATy/VLANy działają!
+
+Przykładowe schematy sieci, które mogą pojawić się na zaliczeniu:
+
+../../_images/net01.png
+../../_images/net08.png
+Top tips
+Najlepiej zacząć od adresacji. Poprawne wyliczenie adresów daje ok. 20% punktów.
+
+Reguły dla filtrów czy NATów najlepiej definiować w skrypcie, w którym:
+
+najpierw resetowane są łańcuchy, wszystkie lub dla wybranych tablic,
+
+później ustawione są polityki dla łańcuchów,
+
+na koniec dodawane są reguły, jedna po drugiej.
+
+To spowoduje, że będzie utrzymany porządek w iptables i pozwoli uniknąć wielu błędów.
+
+Uaktualniłem ściągę z przydatnymi komendami: Przydatne komendy - ściąga. Dodatkowo zawiera ona podstawowe informacje na temat sprzętu w laboratorium oraz tego, jak z niego korzystać.
+
+Warto dobrze rozumieć jakie informacje można wydobyć z tego co pokazują komendy takie jak ip addr i ip route. W szczególności proszę zwrócić uwagę na:
+
+ip addr
+
+jakie interfejsy sieciowe są w komputerze, jakie są przypisane do nich adresy IP i do jakich sieci należą te adresy,
+
+jakie są adresy MAC interfejsów,
+
+czy interfejsy są w stanie down czy up (jak jest stan down, to trzeba upewnić się, że interfejs jest podniesiony i jest połącznie ze innym urządzeniem sieciowym),
+
+ip route
+
+do jakich sieci komputer jest podłączony bezpośrednio i na jakim interfejsie sieciowym (wpisy bez via, adres po src oznacza adres komputera w tej sieci); te wpisy dodawane są automatycznie przy przypisywaniu adresu IP do interfejsu,
+
+do jakich sieci routing jest dodany dodatkowo (wpisy z via, to co po via oznacza adres IP bramy, której trzeba przekazać pakiety kierowane do tej sieci; adres bramy musi należeć do sieci, do której komputer jest podłączony bezpośrednio),
+
+jaki jest routing domyślny (wpis default albo 0.0.0.0),
+
+jaka jest kolejność wyboru trasy dla pakietu o zadanym adresie docelowym (patrz slajdy).
+
+Lepiej używać komend z rodziny ip niż ifconfig i route. W szczególności przy pomocy ip łatwiej jest dodawać i listować wiele adresów przypisanych do tego samego interfejsu. Dodatkowe adresy dodane do tego samego interfejsu przy pomocy ip nie będą widoczne w ifconfig. W zasadzie jedyną sytuacją kiedy ifconfig jest wygodniejsze niż ip to podnoszenie i opuszczanie interfejsu (ifconfig p4p1 up/down vs ip link set p4p1 up/down).
+
+Czasami jest tak, że trzeba dodać routing do kilku sieci, ale dla wszystkich tych sieci jest wspólna brama. Można więc w niektórych przypadkach zredukować liczbę komend, które trzeba wykonać, dodając jeden wpis dla nadsieci. W szczególności warto używać routingu domyślnego gdzie się da.
+
+Tak jak pisałem, trzeba umieć zademonstrować, że routing/filtry/NATy/VLANy działają. Jak to zrobić? Na przykład:
+
+routing - można wysyłać pingi między komputerami, można się zalogować przez ssh na drugi komputer,
+
+filtry - można wysyłać pingi, ale nie można zalogować się przez ssh (albo na odwrót),
+
+SNAT/MASQUERADE - można wysyłać pingi z sieci prywatnej (za NATem) do innych sieci, ale nie na odwrót,
+
+DNAT - nie można bezpośrednio pingować komputera za NATem, ale można się na niego np. zalogować, jeśli forwardowany jest port ssh,
+
+na potrzeby demonstracji, można uruchomić na komputerze/komputerach ncata, w celu symulacji usługi działającej na danym porcie,
+
+VLANy - nie widać ruchu rozgłoszeniowego z sieci działających w innych VLANach (wygenerować ramki na adres rozgłoszeniowy można przy pomocy arping lub ping na adres z naszej sieci, ale nieprzypisany do żadnego urządzenia; warto wiedzieć dlaczego to zadziała),
+
+Analiza czemu coś nie działa powinna uwzględniać następujące kroki:
+
+czy adresacja jest właściwa, np. mamy różne (rozłączne sieci)
+
+czy komputery są właściwie połączone (kable wpięte do właściwych portów),
+
+czy są nadane adresy z właściwych sieci (o prawidłowych maskach) na właściwych interfejsach,
+
+czy do interfejsów nie są przypisane jakieś stare, błędne adresy,
+
+czy interfejsy są podniesione i ich stan to up (ip addr w Linuksie i show ip interface brief w Cisco), a lampki na odpowiednich interfejsach się świecą,
+
+czy można wysyłać pingi między urządzeniami połączonymi bezpośrednio,
+
+czy włączony jest forwarding na komputerach, które mają działać jako routery,
+
+czy jest określony dobrze routing na urządzeniach; można przeanalizować:
+
+jak pakiet jest wysyłany z komputera źródłowego (routing wkazany explicite, brama domyślna, etc.),
+
+jak pakiet przechodzi przez routery, tzn. którym interfejsem jest wysyłany z routera, zgodnie z tym, co jest napisane w tablicy routingu,
+
+czy pakiet dociera do komputera docelowego i jest właściwie przetwarzany,
+
+czy komputer docelowy wie gdzie wysłać pakiet zwrotny (czy routing na komputerze docelowym jest właściwie skonfigurowany),
+
+na każdym etapie można włączyć wiresharka na odpowiednim urządzeniu/interfejsie i podejrzeć jakie pakiety są logowane i z jakimi są adresami źródłowymi i docelowymi; w szczególności czy widać pakiety przesyłane w obie strony (ruch docelowy i zwrotny) czy tylko w jedną stronę,
+
+można też skorzystać z mtr czy traceroute, żeby zobaczyć dokąd ruch dochodzi jak należy,
+
+czy tablica routingu nie zawiera jakichś starych, błędnych wpisów,
+
+czy nie są powłączane jakieś dziwne filtry/NATy, które coś niepotrzebnie blokują (warto upewnić się, że są puste łańcuchy w iptables [-t nat] -L, a polityki ustawione są na ACCEPT),
+
+czy reguły w iptables nie są zbyt ogólne, np. SNAT na wszystkich pakietach na wszysktich interfejsach,
+
+czy symulowana usługa jest uruchomiona na właściwym adresie IP (a nie np. na localhost),
+
+jeśli nie można uruchomić programu na danym porcie, należy sprawdzić przy pomocy netstat czy nie ma uruchomionego już innego procesu, który ten port zajmuje; wtedy taki proces trzeba zabić,
+
+gdy testuje się połączenie z innym komputerem przy pomocy ssh:
+
+można uruchomić ssh z opcją -v lub -vv, co powoduje wypisanie dodatkowych informacji mogących wskazać co jest nie tak,
+
+można sprawdzić czy serwer ssh na komputerze docelowym działa: systemctl status sshd; jeśli stan to inactive trzeba uruchomić serwer: systemctl start sshd i przetestować czy można na tym komputerze zrobić ssh localhost.
+
+Proszę zwrócić uwagę na to, w jaki sposób można na routerach Cisco ustawić kilka adresów na jednym interfejsie. Robi się to na dwa różne sposoby, w zależności od tego, czy:
+
+nie ma VLANów - wchodzi się do konfiguracji interfejsu, dodaje adres, a kolejne dodaje się podobnie, ale ze słówkiem secondary:
+
+interface FastEthernet 0/0
+
+ip address 192.168.1.1 255.255.255.0
+
+no shutdown
+
+ip address 172.16.13.13 255.255.128.0 secondary
+
+ip address 10.10.10.10 255.255.240.0 secondary
+
+są VLANy - uruchamia się interfejs, tworzy wirtualne podinterfejsy dla każdego z adresów i równocześnie konfiguruje się numery VLANów; numer podinterfejsu zwyczajowo związany jest z numerem VLANu, który będzie obsługiwać:
+
+interface GigabitEthernet 0/1
+
+no shutdown
+
+interface GigabitEthernet 0/1.11
+
+encapsulation dot1Q 11
+
+ip address 192.168.1.101 255.255.255.0
+
+interface GigabitEthernet 0/1.22
+
+encapsulation dot1Q 22
+
+ip address 10.10.20.20 255.255.0.0
